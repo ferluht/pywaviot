@@ -1,8 +1,24 @@
 import serial
 import time
-import crc
 
 from binascii import hexlify
+
+code = [0x5e, 0xbc, 0x61, 0xc2, 0x9d, 0x23, 0x46, 0x8c]
+
+def __CRC8byte(data):
+    crc = 0
+    for i in range(8):
+        if (data >> i) % 2:
+            crc ^= code[i]
+
+    return crc
+
+def CRC8(bytes):
+    crc = 0
+    for byte in bytes:
+        crc = __CRC8byte(byte ^ crc)
+
+    return chr(crc)
 
 class WaviotModem():
 
@@ -54,19 +70,45 @@ class WaviotModem():
 
     def __strtobytes__(self, str):
         if str:
-            return [chr(int(str[i:i + 2], 16)) for i in range(0, len(str), 2)]
+            return [ord(str[i]) for i in range(0, len(str))]
+        return None
+
+    def __inttobytes__(self, n, m):
+        if n:
+            if n > 0x100**m:
+                return None
+            ret = []
+            for i in range(m):
+                ret.append(n%0x100)
+                n /= 0x100
+            return ret
         return None
 
     def __sendbytes__(self, command, bytes=None):
         if bytes:
-            bytes = [chr(0xDD), chr(command)] + bytes + [crc.CRC8(bytes), chr(0xDE)]
+            bytes = [chr(0xDD), chr(command)] + [chr(b) for b in bytes] + [CRC8(bytes), chr(0xDE)]
         else:
             bytes = [chr(0xDD), chr(command), chr(0x00), chr(0xDE)]
+
+        # if there are system symbols replace them with escape and xor
+        i = 1
+        while i < len(bytes)-1:
+            if bytes[i] in [chr(0xDF), chr(0xDD), chr(0xDE)]:
+                t = ord(bytes[i]) ^ 0xFF
+                bytes[i] = chr(0xDF)
+                bytes.insert(i + 1, chr(t))
+                i += 1
+            i += 1
 
         self.port.write(chr(0xDD))
         time.sleep(0.2)
         self.port.write(bytes)
         return self.port.read(1000)
+
+    def wakeup(self):
+        self.port.write('e')
+        time.sleep(0.01)
+        self.__sendbytes__(0x04, [0x01,])
 
     def __sendstr__(self, command, data=None):
         bytes = self.__strtobytes__(data)
@@ -78,25 +120,27 @@ class WaviotModem():
             return 0
         message = data[3:6]
         mcrc = data[6]
-        if crc.CRC8(message) == mcrc:
-            return hexlify(message)
+        message = [ord(c) for c in message]
+        if CRC8(message) == mcrc:
+            return hex(message[0]*(256**2) + message[1]*256 + message[2])
         return 0
 
-    def transmit_buffer_size(self):
+    def TX_pending(self):
         data = self.__sendstr__(0x21)
         if data == '':
             return 0
         message = data[2]
         mcrc = data[3]
-        if crc.CRC8(message) == mcrc:
-            return int(hexlify(message), 16)
+        message = [ord(c) for c in message]
+        if CRC8(message) == mcrc:
+            return message
         return 0
 
     def echo(self, data):
         echoed = self.__sendstr__(0x00, data)
         message = echoed[2:2+len(data)/2]
         mcrc = echoed[2+len(data)/2]
-        if crc.CRC8(message) == mcrc:
+        if CRC8(message) == mcrc:
             return hexlify(message)
         return 0
 
@@ -104,23 +148,24 @@ class WaviotModem():
         response = self.__sendstr__(0x32, data)
         message = response[2]
         mcrc = response[3]
-        if crc.CRC8(message) == mcrc:
-            if ord(message) == 0:
+        message = [ord(c) for c in message]
+        if CRC8(message) == mcrc:
+            if message[0] == 0:
                 return True
             return False
         return False
 
-    def config_mode(self, rw, receive_mode, mack_mode,
-                    tx_phy_channel, rx_phy_channel,
-                    tx_pwr, num_of_retries):
-
-        return self.__sendbytes__(0x40, [rw, receive_mode, mack_mode, tx_phy_channel,
-                                        rx_phy_channel, tx_pwr, num_of_retries])
-
-    def config_handshake(self, rw, handshake_mode, mack_mode):
-
-        return self.__sendbytes__(0x40, [rw, handshake_mode, mack_mode])
-
-    def config_maxlen(self, rw, handshake_mode, mack_mode):
-
-        return self.__sendbytes__(0x40, [rw, handshake_mode, mack_mode])
+    def receive(self):
+        num = self.port.inWaiting()
+        mes = self.port.read(num)
+        if mes.startswith(chr(0xDD)) and \
+            mes.endswith(chr(0xDE)):
+            if chr(0xDF) in mes:
+                index = mes.index(chr(0xDF))
+                mes = mes[:index] + \
+                      chr(0xFF ^ ord(mes[index+1])) + \
+                      mes[index+2:]
+            if len(mes) > 4 and mes[1] == chr(0x10) and \
+                CRC8(self.__strtobytes__(mes[2:-2])) == mes[len(mes) - 2]:
+                return mes[2:-2]
+        return None

@@ -1,3 +1,4 @@
 *.xml
 .idea/pywaviot.iml
 *.pyc
+pywaviot.py
