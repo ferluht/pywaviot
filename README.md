@@ -1,4 +1,4 @@
 # pywaviot
 A python connector to WavIoT modem. Requires pySerial and binascii
 
-Example of usage in pywaviot.py
+Example of usage is in example.py
