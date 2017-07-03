@@ -11,4 +11,6 @@ modem.transmit('payload')
 while(1):
     mes = modem.receive()
     if mes:
-        print mes
+        print (mes)
+# set FastDL
+modem.set_fastDL()
